@@ -1,6 +1,8 @@
 import logging
 import random
-logging.basicConfig(filename='debug.txt',level=logging.ERROR, filemode='w')
+logging.basicConfig(filename='debug.txt',level=logging.DEBUG, filemode='w')
+import json
+import sys
 
 def shift_list(list):
     item = None
@@ -22,10 +24,21 @@ class World:
     def reset(self):
         logging.debug(f'Resetting. Resources: {self.resources}')
         self.resources = self.base_resources
+    def serialize(self):
+        return {
+            'current_time': self.current_time,
+            'resources': self.resources,
+        }
+    def deserialize(self, snapshot):
+        self.current_time = snapshot['current_time']
+        self.resources = snapshot['resources']
 
 class Population:
     def __init__(self):
         self.items = {}
+        self.current_id = 0
+    def reset(self):
+        self.items.clear()
         self.current_id = 0
     def find_by_id(self, id):
         return self.items[id]
@@ -43,6 +56,21 @@ class Population:
         return self.current_id
     def get_all(self):
         return list(self.items.values())
+    def serialize(self):
+        snapshot = {
+            'current_id': self.current_id,
+            'members': {}
+        }
+        for item in self.items.values():
+            logging.debug(f'Serialize item {item.id} : {item.serialize()}')
+            snapshot['members'][item.id] = item.serialize()
+        return snapshot
+    def deserialize(self, snapshot):
+        self.reset()
+        self.current_id = snapshot['current_id']
+        for id, item in snapshot['members'].items():
+            organism = Organism.deserialize(item)
+            self.addOrganism(organism)
 
 class Allele:
     def __init__(self):
@@ -52,24 +80,12 @@ class ColorAllele(Allele):
     def __init__(self, type):
         self.type = type
 
-class Organism:
+class Organism(dict):
     def __init__(self, color_alleles, id):
         # 0 = female, 1 = male
         self.gender = random.randint(0,1)
         self.color_alleles = color_alleles
-        self.properties = {
-            "r": 0,
-            "g": 0,
-            "b": 0,
-        }
-        for allele in color_alleles:
-            if allele.type == "red":
-                self.properties["r"] += 255/2
-            elif allele.type == "green":
-                self.properties["g"] += 255/2
-            elif allele.type == "blue":
-                self.properties["b"] += 255/2
-
+        self.compute_properties()
         self.age = 0
         self.breed_score = 100
         self.fitness = 100
@@ -77,8 +93,47 @@ class Organism:
         self.id = id
         logging.debug(f'Creating Organism: {self.id}')
 
+    def compute_properties(self):
+        self.properties = {
+            "r": 0,
+            "g": 0,
+            "b": 0,
+        }
+        for allele in self.color_alleles:
+            if allele.type == "red":
+                self.properties["r"] += 255/2
+            elif allele.type == "green":
+                self.properties["g"] += 255/2
+            elif allele.type == "blue":
+                self.properties["b"] += 255/2
+
     def could_breed(self):
         return (self.age >= 2)
+
+    def serialize(self):
+        return {
+            'gender': self.gender,
+            'color_alleles': list(map(lambda allele: allele.type, self.color_alleles)),
+            'age': self.age,
+            'breed_score': self.breed_score,
+            'fitness': self.fitness,
+            'has_fed': self.has_fed,
+            'id': self.id
+        }
+
+    @staticmethod
+    def deserialize(snapshot):
+        color_alleles = map(lambda type: ColorAllele(type), snapshot['color_alleles'])
+        instance = Organism(color_alleles, snapshot['id'])
+        for key, value in snapshot.items():
+            if (key == 'color_alleles'):
+                pass
+            else:
+                instance[key] = value
+        instance.compute_properties()
+        logging.debug(f"Thawed organism {instance}")
+        return instance
+
 
 class SystemManager:
 
@@ -211,43 +266,70 @@ class SystemManager:
 def main():
     report = []
     population_report = []
+    manager = SystemManager()
+    world = World()
     pop = Population()
     maxAge = 3
     r = ColorAllele("red")
     b = ColorAllele("blue")
     g = ColorAllele("green")
 
-    pop.addOrganism(Organism([r, r], pop.nextId()))
-    pop.addOrganism(Organism([g, b], pop.nextId()))
-    pop.addOrganism(Organism([g, r], pop.nextId()))
-    pop.addOrganism(Organism([g, r], pop.nextId()))
-    pop.addOrganism(Organism([r, b], pop.nextId()))
-    pop.addOrganism(Organism([g, b], pop.nextId()))
-    pop.addOrganism(Organism([r, b], pop.nextId()))
-    pop.addOrganism(Organism([b, r], pop.nextId()))
-    pop.addOrganism(Organism([g, r], pop.nextId()))
-    pop.addOrganism(Organism([b, b], pop.nextId()))
-    pop.addOrganism(Organism([g, b], pop.nextId()))
-    pop.addOrganism(Organism([r, b], pop.nextId()))
-    # Define the initial Adam & Eve generation
-    manager = SystemManager()
-    world = World()
-    # Output the CSV column headers
-    report.append(f'Time,ID,Age,Red,Green,Blue')
-    while world.current_time < 50:
-        manager.Update(pop, maxAge, world)
-        manager.logPopulation(pop, report, world)
-        population_report.append(len(pop.get_all()))
+    if len(sys.argv) > 1:
+        # load a snapshot from a file
+        savefile = open("savefile.json", "wt")
 
-    output = open("output.csv", "wt")
-    for item in report:
-        output.write(f"{item}\n")
-    output.close()
+        # read file
+        with open(sys.argv[1], 'r') as snapshotfile:
+            data=snapshotfile.read()
+        # parse file
+        snapshot = json.loads(data)
 
-    output = open("population.csv", "wt")
-    for item in population_report:
-        output.write(f"{item}\n")
-    # write out the report list to a file
+        logging.debug("Loading world data")
+        world.deserialize(snapshot['world'])
+        logging.debug("Loading population data")
+        pop.deserialize(snapshot['population'])
+    else:
+        # Define the initial Adam & Eve generation
+        pop.addOrganism(Organism([r, r], pop.nextId()))
+        pop.addOrganism(Organism([g, b], pop.nextId()))
+        pop.addOrganism(Organism([g, r], pop.nextId()))
+        pop.addOrganism(Organism([g, r], pop.nextId()))
+        pop.addOrganism(Organism([r, b], pop.nextId()))
+        pop.addOrganism(Organism([g, b], pop.nextId()))
+        pop.addOrganism(Organism([r, b], pop.nextId()))
+        pop.addOrganism(Organism([b, r], pop.nextId()))
+        pop.addOrganism(Organism([g, r], pop.nextId()))
+        pop.addOrganism(Organism([b, b], pop.nextId()))
+        pop.addOrganism(Organism([g, b], pop.nextId()))
+        pop.addOrganism(Organism([r, b], pop.nextId()))
+
+        # Output the CSV column headers
+        report.append(f'Time,ID,Age,Red,Green,Blue')
+        while world.current_time < 2:
+            manager.Update(pop, maxAge, world)
+            manager.logPopulation(pop, report, world)
+            population_report.append(len(pop.get_all()))
+
+        output = open("output.csv", "wt")
+        for item in report:
+            output.write(f"{item}\n")
+        output.close()
+
+        output = open("population.csv", "wt")
+        for item in population_report:
+            output.write(f"{item}\n")
+        # write out the report list to a file
+
+    last_organism = pop.find_by_id( pop.current_id )
+    snapshot = {
+        'world': world.serialize(),
+        'population': pop.serialize(),
+    }
+
+    savefile = open("savefile.json", "wt")
+    json.dump(snapshot, savefile, sort_keys=True, indent=2)
+    logging.debug("Wrote to savefile")
+
 
 
 if __name__ == "__main__":
